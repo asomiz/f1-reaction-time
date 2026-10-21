@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lights Out Reaction Time</title>
+<style>
+  :root { --bg:#15171a; --pod:#0b0c0e; --off:#2a2d32; --red:#ff2a1f; --text:#f2f2f0; --muted:#8d9299; --green:#3ddc84; }
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: Bahnschrift, "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+    display: flex; padding: 16px; touch-action: manipulation;
+  }
+  [hidden] { display: none !important; }
+  .intro { margin: auto; max-width: 30ch; text-align: center; display: flex; flex-direction: column; gap: 18px; align-items: center; }
+  .intro h1 { font-size: clamp(24px, 6vw, 34px); line-height: 1.25; margin: 0; }
+  .intro p { font-size: clamp(20px, 5vw, 28px); margin: 0; animation: fade .5s both; }
+  .row { display: flex; gap: 10px; width: 100%; max-width: 340px; }
+  input { flex: 1; min-width: 0; font: inherit; font-size: 20px; padding: 12px 14px; border-radius: 8px; border: 2px solid var(--off); background: var(--pod); color: var(--text); }
+  button { font: inherit; font-size: 20px; font-weight: 700; padding: 12px 20px; border: 0; border-radius: 8px; background: var(--red); color: #fff; cursor: pointer; }
+  button.link { background: none; color: var(--muted); font-size: 15px; font-weight: 400; text-decoration: underline; padding: 4px; }
+  :focus-visible { outline: 3px solid var(--green); outline-offset: 3px; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+  #game { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 32px; width: 100%; max-width: 520px; }
+  #play { display: flex; flex-direction: column; align-items: center; gap: 24px; width: 100%; padding: 8px 0; user-select: none; -webkit-user-select: none; cursor: pointer; }
+  .gantry { display: flex; gap: clamp(8px, 2.5vw, 20px); background: var(--pod); padding: 18px; border-radius: 14px; }
+  .light { width: clamp(46px, 14vw, 88px); height: clamp(46px, 14vw, 88px); border-radius: 50%; background: var(--off); transition: background .05s; }
+  .light.on { background: var(--red); box-shadow: 0 0 28px 6px rgba(255,42,31,.55); }
+  .time { font-size: clamp(56px, 18vw, 120px); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; min-height: 1em; }
+  .time.bad { color: var(--red); }
+  .msg { font-size: clamp(18px, 4.5vw, 26px); text-align: center; max-width: 30ch; min-height: 3.2em; line-height: 1.3; }
+  .msg small { display: block; color: var(--muted); font-size: .72em; margin-top: 6px; }
+  .best, .rank { color: var(--muted); font-size: 16px; min-height: 1.2em; text-align: center; }
+  .rank { color: var(--text); font-size: 20px; font-weight: 700; }
+
+  .board { width: 100%; background: var(--pod); border-radius: 14px; padding: 18px 20px; }
+  .board h2 { margin: 0 0 12px; font-size: 20px; }
+  .board ol { list-style: none; margin: 0; padding: 0; }
+  .board li { display: grid; grid-template-columns: 3.2ch 1fr auto; gap: 12px; padding: 8px 6px; border-top: 1px solid var(--off); font-size: 18px; font-variant-numeric: tabular-nums; }
+  .board li.me { color: var(--green); font-weight: 700; }
+  .board .empty { color: var(--muted); padding: 8px 0 0; }
+  @media (prefers-reduced-motion: reduce) { .light { transition: none; } .intro p { animation: none; } }
+</style>
+</head>
+<body>
+
+<section class="intro" id="intro">
+  <h1 id="greet"></h1>
+  <form class="row" id="nameForm">
+    <input id="nameInput" maxlength="12" placeholder="Your name" autocomplete="off" aria-label="Your name">
+    <button type="submit">Go</button>
+  </form>
+  <div id="lines"></div>
+  <button id="ready" hidden>Yes, I'm ready</button>
+  <button class="link" id="notYou" hidden>Not you?</button>
+</section>
+
+<section id="game" hidden>
+  <div id="play">
+    <div class="gantry" aria-hidden="true">
+      <div class="light"></div><div class="light"></div><div class="light"></div><div class="light"></div><div class="light"></div>
+    </div>
+    <div class="time" id="time" aria-live="polite">&nbsp;</div>
+    <div class="msg" id="msg"></div>
+    <div class="rank" id="rank"></div>
+    <div class="best" id="best"></div>
+  </div>
+  <div class="board">
+    <h2>Top 10 fastest</h2>
+    <ol id="board"></ol>
+    <div class="empty" id="boardEmpty">Loading the leaderboard…</div>
+  </div>
+</section>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, orderBy, limit, where,
+         onSnapshot, getCountFromServer, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+// ---------- Firebase ----------
+const firebaseConfig = {
+  apiKey: "AIzaSyADdIszkydrskrTs3uwS747Tejygy3uDN8",
+  authDomain: "f1-reaction-time-def12.firebaseapp.com",
+  projectId: "f1-reaction-time-def12",
+  storageBucket: "f1-reaction-time-def12.firebasestorage.app",
+  messagingSenderId: "897466765331",
+  appId: "1:897466765331:web:4c69bdf06bc9abdc056fe6"
+};
+let db = null, auth = null, uid = null;
+const boardEl = document.getElementById("board");
+const boardEmpty = document.getElementById("boardEmpty");
+
+function renderBoard(rows) {
+  boardEl.textContent = "";
+  rows.forEach(function (r, i) {
+    const li = document.createElement("li");
+    if (r.id === uid) li.className = "me";
+    const a = document.createElement("span"); a.textContent = "P" + (i + 1);
+    const b = document.createElement("span"); b.textContent = r.name;
+    const c = document.createElement("span"); c.textContent = r.best.toFixed(3) + "s";
+    li.append(a, b, c); boardEl.appendChild(li);
+  });
+  boardEmpty.hidden = rows.length > 0;
+  boardEmpty.textContent = "No scores yet. Be the first.";
+}
+
+function startBoard() {
+  if (!db) { boardEmpty.textContent = "Leaderboard unavailable right now."; return; }
+  onSnapshot(query(collection(db, "players"), orderBy("best"), limit(10)),
+    function (snap) { renderBoard(snap.docs.map(function (d) { return { id: d.id, name: d.data().name, best: d.data().best }; })); },
+    function () { boardEmpty.hidden = false; boardEmpty.textContent = "Leaderboard unavailable right now."; });
+}
+
+try {
+  const app = initializeApp(firebaseConfig);
+  auth = getAuth(app); db = getFirestore(app);
+  signInAnonymously(auth).then(function (c) { uid = c.user.uid; }).catch(function () {}).finally(startBoard);
+} catch (e) { startBoard(); }
+
+async function submitScore(t, name) {
+  const rankEl = document.getElementById("rank");
+  if (!db || !uid) { rankEl.textContent = ""; return; }
+  rankEl.textContent = "Saving your score…";
+  try {
+    const time = Math.round(t * 1000) / 1000;
+    await addDoc(collection(db, "attempts"), { uid: uid, name: name, time: time, createdAt: serverTimestamp() });
+    const ref = doc(db, "players", uid);
+    const snap = await getDoc(ref);
+    const myBest = snap.exists() ? Math.min(snap.data().best, time) : time;
+    await setDoc(ref, { name: name, best: myBest, updatedAt: serverTimestamp() });
+    const players = collection(db, "players");
+    const better = await getCountFromServer(query(players, where("best", "<", myBest)));
+    const total = await getCountFromServer(players);
+    rankEl.textContent = "You're P" + (better.data().count + 1) + " of " + total.data().count;
+  } catch (e) {
+    rankEl.textContent = "Couldn't save this score.";
+  }
+}
+
+// ---------- Intro ----------
+const HOST = "Asomi";
+const intro = document.getElementById("intro");
+const greet = document.getElementById("greet");
+const form = document.getElementById("nameForm");
+const input = document.getElementById("nameInput");
+const lines = document.getElementById("lines");
+const readyBtn = document.getElementById("ready");
+const notYou = document.getElementById("notYou");
+const gameEl = document.getElementById("game");
+let playerName = "";
+let introTimers = [];
+let screen = "intro";
+
+function getSaved() { try { return localStorage.getItem("lor_name") || ""; } catch (e) { return ""; } }
+function save(n) { try { localStorage.setItem("lor_name", n); } catch (e) {} }
+function forget() { try { localStorage.removeItem("lor_name"); } catch (e) {} }
+
+function askName() {
+  introTimers.forEach(clearTimeout); introTimers = [];
+  lines.textContent = ""; readyBtn.hidden = true; notYou.hidden = true;
+  greet.textContent = "Hello, welcome to Lights Out Reaction Time. I'm " + HOST + ", and you are\u2026?";
+  form.hidden = false; input.value = ""; input.focus();
+}
+
+function say(text, delay) {
+  introTimers.push(setTimeout(function () {
+    const p = document.createElement("p"); p.textContent = text; lines.appendChild(p);
+  }, delay));
+}
+
+function welcome(returning) {
+  form.hidden = true; lines.textContent = "";
+  greet.textContent = returning ? "Welcome back, " + playerName + "." : "Nice to meet you, " + playerName + ".";
+  say("Let\u2019s see how fast you are.", 1200);
+  say("Are you ready?", 2800);
+  introTimers.push(setTimeout(function () { readyBtn.hidden = false; notYou.hidden = false; readyBtn.focus(); }, 2800));
+}
+
+form.addEventListener("submit", function (e) {
+  e.preventDefault();
+  const n = input.value.trim().slice(0, 12);
+  if (!n) { input.focus(); return; }
+  playerName = n; save(n); welcome(false);
+});
+notYou.addEventListener("click", function () { forget(); askName(); });
+readyBtn.addEventListener("click", function () {
+  intro.hidden = true; gameEl.hidden = false; screen = "game"; start();
+});
+
+const saved = getSaved();
+if (saved) { playerName = saved; welcome(true); } else { askName(); }
+
+// ---------- Game ----------
+const F1_AVG = 0.2; // typical F1 driver start reaction, in seconds
+const lights = document.querySelectorAll(".light");
+const timeEl = document.getElementById("time");
+const msgEl = document.getElementById("msg");
+const bestEl = document.getElementById("best");
+const rankEl = document.getElementById("rank");
+let state = "idle"; // idle | lights | waiting | go
+let timers = [];
+let goTime = 0;
+let best = null;
+
+function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+function setLights(n) { lights.forEach(function (l, i) { l.classList.toggle("on", i < n); }); }
+function show(main, sub) {
+  msgEl.textContent = main;
+  if (sub) { const s = document.createElement("small"); s.textContent = sub; msgEl.appendChild(s); }
+}
+
+function start() {
+  clearTimers();
+  state = "lights";
+  timeEl.innerHTML = "&nbsp;"; timeEl.classList.remove("bad"); rankEl.textContent = "";
+  show("Get ready\u2026");
+  setLights(0);
+  for (let i = 1; i <= 5; i++) {
+    timers.push(setTimeout(function () { setLights(i); if (i === 5) { state = "waiting"; hold(); } }, i * 1000));
+  }
+}
+
+function hold() {
+  const delay = 1000 + Math.random() * 2000; // 1-3 seconds, so nobody can predict it
+  timers.push(setTimeout(function () {
+    setLights(0);
+    state = "go";
+    requestAnimationFrame(function () { goTime = performance.now(); });
+  }, delay));
+}
+
+function jumpStart() {
+  clearTimers(); state = "idle"; setLights(0);
+  timeEl.textContent = "JUMP START"; timeEl.classList.add("bad");
+  show("Too early, " + playerName + ". That\u2019s a penalty.", "Tap to try again.");
+}
+
+function finish() {
+  const t = (performance.now() - goTime) / 1000;
+  state = "idle";
+  timeEl.textContent = t.toFixed(3) + "s";
+  const diff = Math.abs(t - F1_AVG).toFixed(3);
+  let verdict;
+  if (t <= F1_AVG) verdict = "F1 level. " + diff + "s faster than the ~0.2s benchmark.";
+  else if (t <= 0.25) verdict = "So close. " + diff + "s off F1 pace.";
+  else if (t <= 0.35) verdict = "Average human. " + diff + "s slower than an F1 driver.";
+  else verdict = "Back of the grid. " + diff + "s slower than an F1 driver.";
+  show(verdict, "Tap to go again.");
+  if (best === null || t < best) best = t;
+  bestEl.textContent = playerName + "\u2019s best this session: " + best.toFixed(3) + "s";
+  submitScore(t, playerName);
+}
+
+function press() {
+  if (screen !== "game") return;
+  if (state === "idle") start();
+  else if (state === "lights" || state === "waiting") jumpStart();
+  else if (state === "go") finish();
+}
+
+document.getElementById("play").addEventListener("pointerdown", function (e) { e.preventDefault(); press(); });
+document.addEventListener("keydown", function (e) {
+  if (screen === "game" && e.code === "Space" && !e.repeat) { e.preventDefault(); press(); }
+});
+</script>
+</body>
+</html>
