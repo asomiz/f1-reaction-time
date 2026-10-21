@@ -21,7 +21,7 @@ that means a penalty. Here it means public shame.
 How Do You Rate? please find out?
 
 Built With the following tech stack
-- HTML, CSS and JavaScript *(change this to match your stack)*
+- HTML, CSS and JavaScript and python too. 
 - Hosted online so anyone can play
 I got a lot of assitance and elp from claude ai and chatgpt
 
