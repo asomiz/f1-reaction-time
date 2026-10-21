@@ -47,9 +47,5 @@ About Me
 I'm **Asomi**, a motorsport content creator making the jump into tech, data
 and engineering. Follow along as I build projects and learn in public.
 
-- 📱 TikTok: *[xsomi]*
-- 🐙 GitHub: *[asomiz]*
-
----
-
-**Lights out and away we go! 🏎️💨**
+TikTok: *[xsomi]*
+GitHub: *[asomiz]*
