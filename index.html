@@ -41,6 +41,15 @@
   .board ol { list-style: none; margin: 0; padding: 0; }
   .board li { display: grid; grid-template-columns: 3.2ch 1fr auto; gap: 12px; padding: 8px 6px; border-top: 1px solid var(--off); font-size: 18px; font-variant-numeric: tabular-nums; }
   .board li.me { color: var(--green); font-weight: 700; }
+  .me-card { width: 100%; background: var(--pod); border-radius: 14px; padding: 16px 20px; display: flex; justify-content: space-around; text-align: center; gap: 12px; }
+  .me-card div { display: flex; flex-direction: column; gap: 4px; }
+  .me-card .label { color: var(--muted); font-size: 14px; text-transform: uppercase; letter-spacing: .08em; }
+  .me-card .value { color: var(--green); font-size: clamp(22px, 6vw, 30px); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .scroll { max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .board .row2 { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .board .row2 h2 { margin: 0; }
+  button.more { font-size: 16px; padding: 10px 16px; background: var(--off); }
+  #allMore { width: 100%; margin-top: 12px; }
   .board .empty { color: var(--muted); padding: 8px 0 0; }
   @media (prefers-reduced-motion: reduce) { .light { transition: none; } .intro p { animation: none; } }
 </style>
@@ -68,17 +77,27 @@
     <div class="rank" id="rank"></div>
     <div class="best" id="best"></div>
   </div>
+  <div class="me-card" id="meCard" hidden>
+    <div><span class="label">Your best</span><span class="value" id="meBest"></span></div>
+    <div><span class="label">Your rank</span><span class="value" id="meRank"></span></div>
+  </div>
   <div class="board">
     <h2>Top 10 fastest</h2>
     <ol id="board"></ol>
     <div class="empty" id="boardEmpty">Loading the leaderboard…</div>
+  </div>
+  <div class="board">
+    <div class="row2"><h2>All players</h2><button class="more" id="findMe" hidden>Find me</button></div>
+    <div class="scroll" id="allScroll"><ol id="all"></ol></div>
+    <div class="empty" id="allEmpty">Loading all players…</div>
+    <button class="more" id="allMore" hidden>Load more</button>
   </div>
 </section>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, orderBy, limit, where,
+import { getFirestore, doc, getDoc, getDocs, setDoc, addDoc, collection, query, orderBy, limit, startAfter, where,
          onSnapshot, getCountFromServer, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 // ---------- Firebase ----------
@@ -94,22 +113,107 @@ let db = null, auth = null, uid = null;
 const boardEl = document.getElementById("board");
 const boardEmpty = document.getElementById("boardEmpty");
 
+let lastRows = [];
+let myBest = null, myRank = null, myTotal = null; // your all-time best and where it ranks among everyone
+
+function addRow(pos, name, best, isMe, target) {
+  const li = document.createElement("li");
+  if (isMe) li.className = "me";
+  const a = document.createElement("span"); a.textContent = "P" + pos;
+  const b = document.createElement("span"); b.textContent = name;
+  const c = document.createElement("span"); c.textContent = best.toFixed(3) + "s";
+  li.append(a, b, c); (target || boardEl).appendChild(li);
+}
+
 function renderBoard(rows) {
+  if (rows) lastRows = rows;
   boardEl.textContent = "";
-  rows.forEach(function (r, i) {
-    const li = document.createElement("li");
-    if (r.id === uid) li.className = "me";
-    const a = document.createElement("span"); a.textContent = "P" + (i + 1);
-    const b = document.createElement("span"); b.textContent = r.name;
-    const c = document.createElement("span"); c.textContent = r.best.toFixed(3) + "s";
-    li.append(a, b, c); boardEl.appendChild(li);
-  });
-  boardEmpty.hidden = rows.length > 0;
+  lastRows.forEach(function (r, i) { addRow(i + 1, r.name, r.best, r.id === uid); });
+  boardEmpty.hidden = lastRows.length > 0;
   boardEmpty.textContent = "No scores yet. Be the first.";
 }
 
+function showMyRank() {
+  const card = document.getElementById("meCard");
+  document.getElementById("findMe").hidden = (myBest === null || myRank === null);
+  if (myBest === null || myRank === null) { card.hidden = true; return; }
+  document.getElementById("meBest").textContent = myBest.toFixed(3) + "s";
+  document.getElementById("meRank").textContent = "P" + myRank + " of " + myTotal;
+  card.hidden = false;
+}
+
+// ---------- Full list of every player (loaded in pages of 50) ----------
+const PAGE = 50;
+const allEl = document.getElementById("all");
+const allEmpty = document.getElementById("allEmpty");
+const allMore = document.getElementById("allMore");
+let allRows = [], allCursor = null, allDone = false, allLoading = false;
+
+function renderAll() {
+  allEl.textContent = "";
+  allRows.forEach(function (r, i) { addRow(i + 1, r.name, r.best, r.id === uid, allEl); });
+  allEmpty.hidden = allRows.length > 0;
+  allEmpty.textContent = "No scores yet. Be the first.";
+  allMore.hidden = allDone;
+}
+
+async function loadAll(minRows) {
+  if (!db || allLoading) return;
+  allLoading = true; allMore.disabled = true;
+  try {
+    do {
+      const col = collection(db, "players");
+      const q = allCursor
+        ? query(col, orderBy("best"), startAfter(allCursor), limit(PAGE))
+        : query(col, orderBy("best"), limit(PAGE));
+      const snap = await getDocs(q);
+      snap.docs.forEach(function (d) { allRows.push({ id: d.id, name: d.data().name, best: d.data().best }); });
+      if (snap.docs.length) allCursor = snap.docs[snap.docs.length - 1];
+      if (snap.docs.length < PAGE) allDone = true;
+    } while (!allDone && allRows.length < (minRows || 0));
+    renderAll();
+  } catch (e) {
+    console.error("Loading all players failed:", e);
+    allEmpty.hidden = false; allEmpty.textContent = "Couldn\u2019t load the full list.";
+  }
+  allLoading = false; allMore.disabled = false;
+}
+
+// Start over from the top (used after a new score) but keep as many rows loaded as before
+function refreshAll() {
+  const keep = Math.max(PAGE, allRows.length);
+  allRows = []; allCursor = null; allDone = false;
+  return loadAll(keep);
+}
+
+async function findMe() {
+  if (myRank === null) return;
+  if (allRows.length < myRank) await loadAll(myRank);
+  const row = allEl.querySelector("li.me");
+  if (row) row.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+allMore.addEventListener("click", function () { loadAll(); });
+document.getElementById("findMe").addEventListener("click", findMe);
+
+// Look up the saved best for this player and work out their rank among ALL players.
+async function loadMyRank() {
+  if (!db || !uid) return;
+  try {
+    const snap = await getDoc(doc(db, "players", uid));
+    if (!snap.exists()) return;
+    myBest = snap.data().best;
+    const players = collection(db, "players");
+    const better = await getCountFromServer(query(players, where("best", "<", myBest)));
+    const total = await getCountFromServer(players);
+    myRank = better.data().count + 1; myTotal = total.data().count;
+    showMyRank(); renderBoard();
+  } catch (e) { console.error("Rank lookup failed:", e); }
+}
+
 function startBoard() {
-  if (!db) { boardEmpty.textContent = "Leaderboard unavailable right now."; return; }
+  if (!db) { boardEmpty.textContent = "Leaderboard unavailable right now."; document.getElementById("allEmpty").textContent = "Full list unavailable right now."; return; }
+  loadAll();
   onSnapshot(query(collection(db, "players"), orderBy("best"), limit(10)),
     function (snap) { renderBoard(snap.docs.map(function (d) { return { id: d.id, name: d.data().name, best: d.data().best }; })); },
     function () { boardEmpty.hidden = false; boardEmpty.textContent = "Leaderboard unavailable right now."; });
@@ -118,26 +222,36 @@ function startBoard() {
 try {
   const app = initializeApp(firebaseConfig);
   auth = getAuth(app); db = getFirestore(app);
-  signInAnonymously(auth).then(function (c) { uid = c.user.uid; }).catch(function () {}).finally(startBoard);
+  signInAnonymously(auth).then(function (c) { uid = c.user.uid; }).catch(function (e) { console.error('Sign-in failed:', e); }).finally(function () { startBoard(); loadMyRank(); });
 } catch (e) { startBoard(); }
 
 async function submitScore(t, name) {
   const rankEl = document.getElementById("rank");
   if (!db || !uid) { rankEl.textContent = ""; return; }
-  rankEl.textContent = "Saving your score…";
+  rankEl.textContent = "Saving your score\u2026";
+  const time = Math.round(t * 1000) / 1000;
   try {
-    const time = Math.round(t * 1000) / 1000;
-    await addDoc(collection(db, "attempts"), { uid: uid, name: name, time: time, createdAt: serverTimestamp() });
+    // Log every attempt (kept separate; a failure here must not block the leaderboard)
+    try { await addDoc(collection(db, "attempts"), { uid: uid, name: name, time: time, createdAt: serverTimestamp() }); }
+    catch (e) { console.error("Attempt log failed:", e); }
+
     const ref = doc(db, "players", uid);
     const snap = await getDoc(ref);
-    const myBest = snap.exists() ? Math.min(snap.data().best, time) : time;
-    await setDoc(ref, { name: name, best: myBest, updatedAt: serverTimestamp() });
+    const prev = snap.exists() ? snap.data().best : null;
+    // Best overwrites the old score only if this one is faster
+    const newBest = (prev === null || time < prev) ? time : prev;
+    await setDoc(ref, { name: name, best: newBest, updatedAt: serverTimestamp() });
+
+    myBest = newBest;
     const players = collection(db, "players");
     const better = await getCountFromServer(query(players, where("best", "<", myBest)));
     const total = await getCountFromServer(players);
-    rankEl.textContent = "You're P" + (better.data().count + 1) + " of " + total.data().count;
+    myRank = better.data().count + 1; myTotal = total.data().count;
+    rankEl.textContent = "";
+    showMyRank(); renderBoard(); refreshAll();
   } catch (e) {
-    rankEl.textContent = "Couldn't save this score.";
+    console.error("Saving score failed:", e);
+    rankEl.textContent = "Couldn\u2019t save this score (" + (e && e.code ? e.code : "error") + ").";
   }
 }
 
@@ -228,6 +342,7 @@ function hold() {
   const delay = 1000 + Math.random() * 2000; // 1-3 seconds, so nobody can predict it
   timers.push(setTimeout(function () {
     setLights(0);
+    goTime = performance.now();
     state = "go";
     requestAnimationFrame(function () { goTime = performance.now(); });
   }, delay));
